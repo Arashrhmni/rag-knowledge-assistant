@@ -23,9 +23,6 @@ def test_chunk_overlap():
     chunks = _split_text(text, chunk_size=100, overlap=20)
     # With overlap, adjacent chunks should share some content
     if len(chunks) > 1:
-        # The start of chunk[1] should contain the tail of chunk[0]
-        tail = chunks[0][-20:]
-        # tail might be partial word — just verify chunks are non-empty
         assert all(len(c) > 0 for c in chunks)
 
 
