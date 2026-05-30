@@ -79,9 +79,3 @@ spec:
     requests:
       storage: 5Gi
 ---
-# kubectl create secret generic rag-secrets --from-literal=openai-api-key=sk-...
-# apiVersion: v1
-# kind: Secret
-# metadata:
-#   name: rag-secrets
-# type: Opaque
