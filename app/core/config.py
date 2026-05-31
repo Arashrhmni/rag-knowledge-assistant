@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 
-
 class Settings(BaseSettings):
     # LLM
     openai_api_key: Optional[str] = None
