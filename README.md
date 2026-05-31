@@ -56,7 +56,7 @@ Built with **FastAPI**, **ChromaDB**, **sentence-transformers** (local embedding
 ### Option 1 — Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/yourusername/rag-knowledge-assistant
+git clone https://github.com/Arashrhmni/rag-knowledge-assistant
 cd rag-knowledge-assistant
 
 cp .env.example .env
