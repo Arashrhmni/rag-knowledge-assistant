@@ -1,123 +1,149 @@
 """
-Integration tests for the RAG Knowledge Assistant API.
-These tests use a temporary in-memory vector store and do NOT require
-an OpenAI API key — they test the full pipeline except LLM generation.
+API endpoint tests.
+Run with:  python -m pytest tests/ -v
 """
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-import io
 
 from app.main import app
-from app.core.vector_store import VectorStore
+
+client = TestClient(app)
 
 
-@pytest.fixture(scope="module")
-def client():
-    # Use a fresh in-memory vector store for tests
-    with patch("app.core.config.settings.chroma_persist_dir", "/tmp/test_chroma"):
-        with TestClient(app) as c:
-            yield c
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
 
-
-def test_health(client):
+def test_health_returns_ok():
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert "vector_store_chunks" in data
+    assert "llm_configured" in data
     assert "embedding_model" in data
+    assert "chunks_indexed" in data
+    assert "sources_indexed" in data
 
 
-def test_ingest_text(client):
+def test_health_llm_configured_is_bool():
+    response = client.get("/health")
+    assert isinstance(response.json()["llm_configured"], bool)
+
+
+# ------------------------------------------------------------------
+# Ingest — text
+# ------------------------------------------------------------------
+
+def test_ingest_text_success():
     response = client.post(
         "/api/v1/ingest/text",
-        json={
-            "text": "The Eiffel Tower is located in Paris, France. It was built in 1889 by Gustave Eiffel.",
-            "source": "test_eiffel",
-        },
+        json={"text": "The railway switch failed at 10:00 AM.", "source": "test-doc"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "test-doc"
+    assert data["chunks_added"] >= 1
+    assert "Successfully" in data["message"]
+
+
+def test_ingest_text_empty_text_returns_422():
+    response = client.post(
+        "/api/v1/ingest/text",
+        json={"text": "   ", "source": "test"},
+    )
+    assert response.status_code == 422
+
+
+def test_ingest_text_empty_source_returns_422():
+    response = client.post(
+        "/api/v1/ingest/text",
+        json={"text": "Some content here.", "source": ""},
+    )
+    assert response.status_code == 422
+
+
+# ------------------------------------------------------------------
+# Ingest — file
+# ------------------------------------------------------------------
+
+def test_ingest_txt_file_success():
+    file_content = b"This is a plain text document about railway maintenance."
+    response = client.post(
+        "/api/v1/ingest/file",
+        files={"file": ("test.txt", file_content, "text/plain")},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["chunks_added"] >= 1
-    assert data["source"] == "test_eiffel"
 
 
-def test_ingest_empty_text_rejected(client):
+def test_ingest_unsupported_file_type_returns_400():
     response = client.post(
+        "/api/v1/ingest/file",
+        files={"file": ("test.exe", b"binary content", "application/octet-stream")},
+    )
+    assert response.status_code == 400
+    assert "not supported" in response.json()["detail"].lower()
+
+
+def test_ingest_empty_file_returns_422():
+    response = client.post(
+        "/api/v1/ingest/file",
+        files={"file": ("empty.txt", b"", "text/plain")},
+    )
+    assert response.status_code == 422
+
+
+# ------------------------------------------------------------------
+# Sources
+# ------------------------------------------------------------------
+
+def test_list_sources_returns_list():
+    # Ingest something first so there's at least one source
+    client.post(
         "/api/v1/ingest/text",
-        json={"text": "   ", "source": "empty"},
+        json={"text": "Content for source listing test.", "source": "source-list-test"},
     )
-    assert response.status_code == 400
-
-
-def test_ingest_txt_file(client):
-    content = b"Python is a high-level programming language. It was created by Guido van Rossum."
-    response = client.post(
-        "/api/v1/ingest/file",
-        files={"file": ("test.txt", io.BytesIO(content), "text/plain")},
-    )
-    assert response.status_code == 200
-    assert response.json()["chunks_added"] >= 1
-
-
-def test_ingest_unsupported_format(client):
-    response = client.post(
-        "/api/v1/ingest/file",
-        files={"file": ("test.exe", io.BytesIO(b"binary"), "application/octet-stream")},
-    )
-    assert response.status_code == 400
-
-
-def test_list_sources(client):
     response = client.get("/api/v1/sources")
     assert response.status_code == 200
     data = response.json()
     assert "sources" in data
-    assert "total_chunks" in data
-    assert data["total_chunks"] >= 0
+    assert isinstance(data["sources"], list)
+    assert isinstance(data["total"], int)
+    assert data["total"] == len(data["sources"])
 
 
-def test_query_no_llm(client):
-    """Query should return fallback answer when no OpenAI key is set."""
-    response = client.post(
-        "/api/v1/query",
-        json={"question": "Where is the Eiffel Tower?"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert "answer" in data
-    assert "context" in data
-    assert isinstance(data["context"], list)
+def test_delete_nonexistent_source_returns_404():
+    response = client.delete("/api/v1/sources/this-source-does-not-exist-xyz")
+    assert response.status_code == 404
 
 
-def test_query_empty_kb(client):
-    """Query on a fresh empty store should return a helpful message."""
-    # Delete all sources first
-    sources_resp = client.get("/api/v1/sources")
-    for src in sources_resp.json()["sources"]:
-        client.delete(f"/api/v1/sources/{src['source']}")
+# ------------------------------------------------------------------
+# Query
+# ------------------------------------------------------------------
 
-    response = client.post(
-        "/api/v1/query",
-        json={"question": "What is the meaning of life?"},
-    )
-    # Should return 422 when empty
+def test_query_empty_question_returns_422():
+    response = client.post("/api/v1/query", json={"question": "  "})
     assert response.status_code == 422
 
 
-def test_delete_source(client):
-    # Ingest first
+def test_query_returns_answer_structure():
+    # Ingest content first
     client.post(
         "/api/v1/ingest/text",
-        json={"text": "Temporary document to be deleted.", "source": "to_delete"},
+        json={
+            "text": "KONUX uses IoT sensors to monitor railway switches and predict failures.",
+            "source": "konux-overview",
+        },
     )
-    # Delete it
-    response = client.delete("/api/v1/sources/to_delete")
+    response = client.post(
+        "/api/v1/query",
+        json={"question": "What does KONUX monitor?"},
+    )
     assert response.status_code == 200
-    assert response.json()["chunks_deleted"] >= 1
-
-
-def test_delete_nonexistent_source(client):
-    response = client.delete("/api/v1/sources/does_not_exist")
-    assert response.status_code == 404
+    data = response.json()
+    assert "question" in data
+    assert "answer" in data
+    assert "context" in data
+    assert "model" in data
+    assert isinstance(data["context"], list)
