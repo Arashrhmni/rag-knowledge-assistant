@@ -1,24 +1,19 @@
+from fastapi import APIRouter, UploadFile, File, Request, HTTPException, Form
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
 import logging
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
-
+from app.services.chunker import parse_file, chunk_text
 from app.core.config import settings
-from app.services.chunker import chunk_text, parse_file
 
+router = APIRouter()
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["ingest"])
-
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".csv"}
 
 
-# ------------------------------------------------------------------
-# Schemas
-# ------------------------------------------------------------------
-
-class TextIngestRequest(BaseModel):
+class IngestTextRequest(BaseModel):
     text: str
-    source: str
+    source: str = "manual_input"
 
 
 class IngestResponse(BaseModel):
@@ -28,93 +23,79 @@ class IngestResponse(BaseModel):
 
 
 class SourcesResponse(BaseModel):
-    sources: list[str]
-    total: int
+    sources: List[dict]
+    total_chunks: int
 
 
-# ------------------------------------------------------------------
-# Endpoints
-# ------------------------------------------------------------------
+class DeleteResponse(BaseModel):
+    source: str
+    chunks_deleted: int
+
 
 @router.post("/ingest/file", response_model=IngestResponse)
-async def ingest_file(request: Request, file: UploadFile = File(...)) -> IngestResponse:
-    filename = file.filename or "upload"
-    logger.info("Ingest file: '%s'", filename)
-
-    ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
+async def ingest_file(request: Request, file: UploadFile = File(...)):
+    """Upload a file (PDF, TXT, MD, CSV) and index it into the vector store."""
+    ext = "." + file.filename.split(".")[-1].lower() if "." in file.filename else ""
+    if ext not in settings.allowed_extensions:
         raise HTTPException(
             status_code=400,
-            detail=f"File type '{ext}' is not supported. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            detail=f"File type '{ext}' not supported. Allowed: {settings.allowed_extensions}",
         )
 
     content = await file.read()
-
-    if len(content) == 0:
-        raise HTTPException(status_code=422, detail="The uploaded file is empty.")
-
-    max_bytes = settings.max_file_size_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        size_mb = len(content) / (1024 * 1024)
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > settings.max_file_size_mb:
         raise HTTPException(
             status_code=413,
-            detail=f"File is too large ({size_mb:.1f} MB). Maximum allowed size is {settings.max_file_size_mb} MB.",
+            detail=f"File too large ({size_mb:.1f} MB). Max: {settings.max_file_size_mb} MB",
         )
 
     try:
-        text = parse_file(content, filename)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        chunks, source_label = parse_file(file.filename, content)
+    except Exception as e:
+        logger.exception("File parsing failed")
+        raise HTTPException(status_code=422, detail=str(e))
 
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="No text could be extracted from the file.")
-
-    chunks = chunk_text(text)
-    if not chunks:
-        raise HTTPException(status_code=422, detail="File produced no usable text chunks.")
-
-    request.app.state.vector_store.add_chunks(chunks, source=filename)
-    logger.info("Indexed '%s': %d chunks added", filename, len(chunks))
+    vector_store = request.app.state.vector_store
+    added = vector_store.add_documents(chunks, source=source_label)
 
     return IngestResponse(
-        source=filename,
-        chunks_added=len(chunks),
-        message=f"Successfully indexed {len(chunks)} chunks from '{filename}'.",
+        source=source_label,
+        chunks_added=added,
+        message=f"Successfully indexed {added} chunks from '{file.filename}'",
     )
 
 
 @router.post("/ingest/text", response_model=IngestResponse)
-async def ingest_text(request: Request, body: TextIngestRequest) -> IngestResponse:
+async def ingest_text(request: Request, body: IngestTextRequest):
+    """Ingest raw text directly (useful for testing or API integrations)."""
     if not body.text.strip():
-        raise HTTPException(status_code=422, detail="Text content cannot be empty.")
-    if not body.source.strip():
-        raise HTTPException(status_code=422, detail="A source name is required.")
-
-    logger.info("Ingest text: source='%s' (%d chars)", body.source, len(body.text))
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
     chunks = chunk_text(body.text)
-    if not chunks:
-        raise HTTPException(status_code=422, detail="Text produced no usable chunks.")
-
-    request.app.state.vector_store.add_chunks(chunks, source=body.source)
+    vector_store = request.app.state.vector_store
+    added = vector_store.add_documents(chunks, source=body.source)
 
     return IngestResponse(
         source=body.source,
-        chunks_added=len(chunks),
-        message=f"Successfully indexed {len(chunks)} chunks from '{body.source}'.",
+        chunks_added=added,
+        message=f"Successfully indexed {added} chunks from text input.",
     )
 
 
 @router.get("/sources", response_model=SourcesResponse)
-async def list_sources(request: Request) -> SourcesResponse:
-    sources = request.app.state.vector_store.list_sources()
-    return SourcesResponse(sources=sources, total=len(sources))
+async def list_sources(request: Request):
+    """List all indexed document sources and their chunk counts."""
+    vector_store = request.app.state.vector_store
+    sources = vector_store.list_sources()
+    return SourcesResponse(sources=sources, total_chunks=vector_store.count())
 
 
-@router.delete("/sources/{source_name}")
-async def delete_source(source_name: str, request: Request) -> dict:
-    deleted = request.app.state.vector_store.delete_source(source_name)
+@router.delete("/sources/{source:path}", response_model=DeleteResponse)
+async def delete_source(request: Request, source: str):
+    """Remove all chunks for a given source document."""
+    vector_store = request.app.state.vector_store
+    deleted = vector_store.delete_source(source)
     if deleted == 0:
-        raise HTTPException(status_code=404, detail=f"Source '{source_name}' not found.")
-    logger.info("Deleted source '%s' (%d chunks)", source_name, deleted)
-    return {"message": f"Deleted '{source_name}' ({deleted} chunks removed)."}
+        raise HTTPException(status_code=404, detail=f"Source '{source}' not found.")
+    return DeleteResponse(source=source, chunks_deleted=deleted)

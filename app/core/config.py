@@ -1,19 +1,17 @@
-from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
+from typing import Optional
 
 
 class Settings(BaseSettings):
-    model_config = ConfigDict(env_file=".env", extra="ignore")
-
-    # OpenAI
-    openai_api_key: str = ""
+    # LLM
+    openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # Embedding
-    embedding_model: str = "all-MiniLM-L6-v2"
+    # Embeddings
+    embedding_model: str = "all-MiniLM-L6-v2"  # local, no API key needed
 
-    # ChromaDB
+    # Vector store
     chroma_persist_dir: str = "./chroma_db"
     collection_name: str = "knowledge_base"
 
@@ -25,8 +23,13 @@ class Settings(BaseSettings):
     top_k: int = 5
     similarity_threshold: float = 0.3
 
-    # Upload
+    # App
     max_file_size_mb: int = 50
+    allowed_extensions: list[str] = [".pdf", ".txt", ".md", ".csv"]
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 
 settings = Settings()
