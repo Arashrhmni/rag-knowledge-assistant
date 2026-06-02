@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-assistant
+  labels:
+    app: rag-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-assistant
+  template:
+    metadata:
+      labels:
+        app: rag-assistant
+    spec:
+      containers:
+        - name: api
+          image: rag-knowledge-assistant:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rag-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: CHROMA_PERSIST_DIR
+              value: /data/chroma
+          volumeMounts:
+            - name: chroma-storage
+              mountPath: /data/chroma
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+      volumes:
+        - name: chroma-storage
+          persistentVolumeClaim:
+            claimName: chroma-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-assistant-svc
+spec:
+  selector:
+    app: rag-assistant
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chroma-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# kubectl create secret generic rag-secrets --from-literal=openai-api-key=sk-...
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: rag-secrets
+# type: Opaque
