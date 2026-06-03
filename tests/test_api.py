@@ -12,6 +12,7 @@ from app.main import app
 from app.core.vector_store import VectorStore
 
 
+
 @pytest.fixture(scope="module")
 def client():
     # Use a fresh in-memory vector store for tests
