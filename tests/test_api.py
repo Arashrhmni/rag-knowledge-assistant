@@ -1,24 +1,42 @@
 """
 Integration tests for the RAG Knowledge Assistant API.
-These tests use a temporary in-memory vector store and do NOT require
+These tests use a temporary vector store and do NOT require
 an OpenAI API key — they test the full pipeline except LLM generation.
 """
+import io
+import tempfile
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-import io
 
 from app.main import app
-from app.core.vector_store import VectorStore
 
+
+class FakeEmbeddingResult:
+    def __init__(self, count: int):
+        self.vectors = [[1.0, 0.0, 0.0] for _ in range(count)]
+
+    def tolist(self):
+        return self.vectors
+
+
+class FakeSentenceTransformer:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def encode(self, texts, show_progress_bar=False):
+        return FakeEmbeddingResult(len(texts))
 
 
 @pytest.fixture(scope="module")
 def client():
-    # Use a fresh in-memory vector store for tests
-    with patch("app.core.config.settings.chroma_persist_dir", "/tmp/test_chroma"):
-        with TestClient(app) as c:
-            yield c
+    # Use a fresh vector store and fake embeddings so CI never downloads a model.
+    with tempfile.TemporaryDirectory() as chroma_dir:
+        with patch("app.core.config.settings.chroma_persist_dir", chroma_dir):
+            with patch("app.core.vector_store.SentenceTransformer", FakeSentenceTransformer):
+                with TestClient(app) as c:
+                    yield c
 
 
 def test_health(client):
