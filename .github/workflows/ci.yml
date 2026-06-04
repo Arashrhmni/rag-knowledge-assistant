@@ -52,7 +52,7 @@ jobs:
         run: docker build -t rag-knowledge-assistant:${{ github.sha }} .
       - name: Smoke test container
         run: |
-          docker run -d --name rag-test -p 8000:8000 rag-knowledge-assistant:${{ github.sha }}
+          docker run -d --name rag-test -p 8000:8000 -e EMBEDDING_MODEL=test rag-knowledge-assistant:${{ github.sha }}
           sleep 15
           curl --fail http://localhost:8000/health
           docker stop rag-test

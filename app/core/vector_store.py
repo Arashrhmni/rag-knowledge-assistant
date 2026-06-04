@@ -10,6 +10,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+class TestEmbedder:
+    """Tiny deterministic embedder for CI smoke tests."""
+
+    def encode(self, texts: List[str], show_progress_bar: bool = False):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+
 class VectorStore:
     """
     ChromaDB-backed vector store with local sentence-transformers embeddings.
@@ -26,11 +33,15 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
         logger.info(f"Loading embedding model: {settings.embedding_model}")
-        self.embedder = SentenceTransformer(settings.embedding_model)
+        if settings.embedding_model == "test":
+            self.embedder = TestEmbedder()
+        else:
+            self.embedder = SentenceTransformer(settings.embedding_model)
         logger.info("Vector store ready.")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        return self.embedder.encode(texts, show_progress_bar=False).tolist()
+        embeddings = self.embedder.encode(texts, show_progress_bar=False)
+        return embeddings.tolist() if hasattr(embeddings, "tolist") else embeddings
 
     def _doc_id(self, content: str, source: str, chunk_index: int) -> str:
         h = hashlib.md5(f"{source}:{chunk_index}:{content[:64]}".encode()).hexdigest()
